@@ -29,12 +29,13 @@ var (
 
 	startInput, endInput string
 	startTime, endTime   time.Time
-	queryString          string
+	limit                int64
 	logGroupInput        string
+	queryString          string
 )
 
 func printUsage() {
-	fmt.Printf("cwq [-h] [-v] [-s <start-time>] [-e <end-time>] -g <log groups> <query>")
+	fmt.Printf("cwq [-h] [-v] [-s <start-time>] [-e <end-time>] [-l <limit>] -g <log-group(s)> <query>")
 }
 
 func debug(fmt string, v ...interface{}) {
@@ -48,6 +49,7 @@ func init() {
 	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.StringVar(&startInput, "s", "", "query start time; RFC3339 formatted")
 	flag.StringVar(&endInput, "e", "", "query emd time; RFC3339 formatted")
+	flag.Int64Var(&limit, "l", 0, "limit")
 	flag.StringVar(&logGroupInput, "g", "", "log group name(s)")
 	flag.Parse()
 	queryString = flag.Arg(0)
@@ -99,6 +101,10 @@ func handleQueryCommand(args []string) error {
 		return fmt.Errorf("start time must be equal or before end time")
 	}
 
+	if limit == 0 {
+		limit = 1000
+	}
+
 	if logGroupInput == "" {
 		return fmt.Errorf("log grou name(s) should be spedified")
 	}
@@ -117,7 +123,7 @@ func handleQueryCommand(args []string) error {
 		LogGroupNames: logGroupNames,
 		StartTime:     aws.Int64(startTime.Unix()),
 		EndTime:       aws.Int64(endTime.Unix()),
-		Limit:         aws.Int64(10000),
+		Limit:         &limit,
 	}
 
 	cli := cloudwatchlogs.New(session.Must(session.NewSession()))
