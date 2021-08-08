@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
 )
 
-const usage = `Usage: query-aws-logs [-h] [-v] [-s <start>] [-e <end>] [-l <limit>] [-b <before>] [-a <after>] -g <group(s)> -q <query>
+const usage = `Usage: query-aws-logs [-h] [-v] [-d] [-s <start>] [-e <end>] [-l <limit>] [-b <before>] [-a <after>] -g <group(s)> -q <query>
 
 Available options are listed below:
 
@@ -30,7 +30,8 @@ Required options:
 
 Non-required options:
   -h	Help flag. If specified, the command usage will be displayed. False by default.
-  -v    Verbose flag. If specified, the debug print will be output in stderr. False by default.
+  -v    Version flag. If specified, version information is displayed. False by default.
+  -d    Debug flag. If specified, the printDebug print will be output in stderr. False by default.
   -s	Start time in RFC3339 format. The logs after this timestamp will be queried. One hour before current time by default.
   -e	End time in RFC3339 format. The logs before this time stamp will be queried. Current time by default.
   -l    Limit of the number of returned logs events which match against query. 1000 by default
@@ -80,6 +81,7 @@ Example1 - retrieving logs:
   ]
 
 Example2 - retrieving logs that contain "ERROR" string with surrounding logs:
+
   $ query-aws-logs -g my-log-group -q 'fields @timestamp,@message,@log,@logStream | @message like "ERROR"' -b 10ms 
 
   This command would output the JSON looking like below:
@@ -122,8 +124,11 @@ var (
 
 	logger *log.Logger
 
-	help    bool
-	verbose bool
+	helpMode    bool
+	versionMode bool
+	debugMode   bool
+
+	version string
 
 	startInput, endInput string
 	startTime, endTime   time.Time
@@ -148,8 +153,9 @@ func init() {
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", usage)
 	}
-	flag.BoolVar(&help, "h", false, "help")
-	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.BoolVar(&helpMode, "h", false, "help")
+	flag.BoolVar(&versionMode, "v", false, "version")
+	flag.BoolVar(&debugMode, "debug", false, "debug")
 	flag.StringVar(&startInput, "s", "", "query start time; RFC3339 formatted")
 	flag.StringVar(&endInput, "e", "", "query emd time; RFC3339 formatted")
 	flag.Int64Var(&limit, "l", 0, "limit")
@@ -160,17 +166,22 @@ func init() {
 	flag.Parse()
 
 	if len(os.Args) < 2 {
-		help = true
+		helpMode = true
 	}
 
-	if verbose {
+	if debugMode {
 		logger = log.New(os.Stderr, "", log.Ldate)
 	}
 }
 
 func main() {
-	if help {
+	if helpMode {
 		printHelp()
+		os.Exit(0)
+	}
+
+	if versionMode {
+		fmt.Printf(version)
 		os.Exit(0)
 	}
 
@@ -192,9 +203,9 @@ func main() {
 
 	select {
 	case <-sigs:
-		debug("canceled")
+		printDebug("canceled")
 	case <-done:
-		debug("done")
+		printDebug("done")
 	}
 
 	cancel()
@@ -282,7 +293,7 @@ func handleQueryCommand(ctx context.Context) error {
 		}
 
 		if *getQueryResultOutput.Status != "Complete" {
-			debug("Query#%s is %s; will retry in %s...", *startQueryOutput.QueryId, *getQueryResultOutput.Status, tickerDuration)
+			printDebug("Query#%s is %s; will retry in %s...", *startQueryOutput.QueryId, *getQueryResultOutput.Status, tickerDuration)
 			continue
 		}
 
@@ -334,29 +345,29 @@ func attachSurroundings(ctx context.Context, rs []*queryResult) {
 	for _, r := range rs {
 		logField, ok := r.Result["@log"]
 		if !ok {
-			debug("@log field doesn't exist unexpectedly")
+			printDebug("@log field doesn't exist unexpectedly")
 			continue
 		}
 		logGroup, ok := extractLogGroupNameFromLogField(logField)
 		if !ok {
-			debug("@log field might be unexpected format: %s", logField)
+			printDebug("@log field might be unexpected format: %s", logField)
 			continue
 		}
 
 		logStreamField, ok := r.Result["@logStream"]
 		if !ok {
-			debug("@logStream field doesn't exist unexpectedly")
+			printDebug("@logStream field doesn't exist unexpectedly")
 			continue
 		}
 
 		timestampField, ok := r.Result["@timestamp"]
 		if !ok {
-			debug("@timestamp field doesn't exist unexpectedly")
+			printDebug("@timestamp field doesn't exist unexpectedly")
 			continue
 		}
 		timestamp, ok := extractTimeFromTimestampField(timestampField)
 		if !ok {
-			debug("@timestamp field might be unexpected format: %s", timestamp)
+			printDebug("@timestamp field might be unexpected format: %s", timestamp)
 			continue
 		}
 		start := timestamp.Add(-before)
@@ -364,7 +375,7 @@ func attachSurroundings(ctx context.Context, rs []*queryResult) {
 
 		logEvents, err := getLogEvents(ctx, logGroup, logStreamField, start, end)
 		if err != nil {
-			debug("failed to get log events from %s:%s between %s and %s", logGroup, logStreamField, start, end)
+			printDebug("failed to get log events from %s:%s between %s and %s", logGroup, logStreamField, start, end)
 			continue
 		}
 
@@ -436,7 +447,7 @@ func printErrorWithUsage(err error) {
 	_, _ = fmt.Fprintf(os.Stderr, "%s\n%s\n", err, usage)
 }
 
-func debug(fmt string, v ...interface{}) {
+func printDebug(fmt string, v ...interface{}) {
 	if logger != nil {
 		logger.Printf(fmt, v...)
 	}

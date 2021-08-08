@@ -18,7 +18,7 @@ $ go get github.com/bananaumai/query-aws-logs
 ## Usage
 
 ```
-$ query-aws-logs [-h] [-v] [-s start] [-e end] [-l limit] [-b before] [-a after] -g group(s) -q query
+$ query-aws-logs [-h] [-v] [-d] [-s start] [-e end] [-l limit] [-b before] [-a after] -g group(s) -q query
 ```
 
 ### Required options:
@@ -27,12 +27,13 @@ $ query-aws-logs [-h] [-v] [-s start] [-e end] [-l limit] [-b before] [-a after]
 * -g	Log group name(s). If you want to specify multiple log groups, delimit each log group by ","(comma). 
 
 See [official documentation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html) for the detailed syntax.
-But, note "limit" won't work instead use -l options to limit the number of the logs events to be returned.
+Note "limit" won't work instead use -l options to limit the number of the logs events to be returned.
 
 ### Non-required options:
 
-
 * -h	Help flag. If specified, the command usage will be displayed. False by default.
+* -v    Version flag. If specified, version information is displayed. False by default.
+* -d    Debug flag. If specified, the printDebug print will be output in stderr. False by default.
 * -v    Verbose flag. If specified, the debug print will be output in stderr. False by default.
 * -s	Start time in RFC3339 format. The logs after this timestamp will be queried. One hour before current time by default.
 * -e	End time in RFC3339 format. The logs before this time stamp will be queried. Current time by default.
