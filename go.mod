@@ -1,4 +1,4 @@
-module github.com/bananaumai/cwq
+module github.com/bananaumai/qal
 
 go 1.16
 
