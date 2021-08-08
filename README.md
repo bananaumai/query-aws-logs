@@ -9,11 +9,22 @@ The query result will be returned JSON array which is easily manipulated by the 
 
 ## Installation
 
-If you are using [Go](https://golang.org/), you can get it by `go-get`.
+### macOS
+
+```
+$ brew install bananaumai/query-aws-logs/query-aws-logs
+```
+
+### Other platform
+
+If you are using [Go](https://golang.org/), perform the following command.
 
 ```
 $ go get github.com/bananaumai/query-aws-logs
 ```
+
+Otherwise, go to [release page](https://github.com/bananaumai/query-aws-logs/releases/latest)
+and download the binary appropriate for your platform.
 
 ## Usage
 
