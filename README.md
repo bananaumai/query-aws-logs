@@ -72,17 +72,19 @@ and you want to see the some amount log lines recorded just before the each "ERR
 If you use aws-cli for this purpose, you may need to perform the following steps:
 
 ```
-$ aws logs start-query --query-string 'fields @timestamp, @message | filter @message like "ERROR"' --start-time ... --end-time ... --log-group ...
-
+$ aws logs start-query --query-string 'fields @timestamp, @message, @log, @logStream | filter @message like "ERROR"' --start-time ... --end-time ... --log-group ...
 # query id will be returned
 
 $ aws logs get-query-result --query-id ...
-
 # try until the query execution status would be "Complete"
 # then parse the results json.
-# for each event in the returned json, perform following command
+# By parsing each event in the returned json, you need to perform following command.
 
-$ aws logs get-log-events ...
+$ aws logs get-log-events --log-group-name=... --log-stream-name=... --start-time=... --end-time=...
+# you need to translate the AWS CloudWatch Logs Insights query result
+# * @log => extract log-group-name
+# * @logStream => use as log-stream-name
+# * @timestamp => convert to epoch milli seconds
 ```
 
 ## Notes
