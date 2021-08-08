@@ -38,6 +38,8 @@ Non-required options:
   -b    Before. A time duration parameter specifying how long before the query matched log event timestamp to be used to search the logs around.
   -a	After. A time duration parameter specifying how long after the query matched log event timestamp to be used to search the logs around.
 
+You are supposed to specify -b and -a option by the duration string: 1s => 1 second, 1ms => 1 milli-sec.
+
 Query results will be JSON array whose element consist of two fields "result" and "surroundings".
 The "result" field simply reflects the result of the query string that you specify.
 The "surroundings" field reflects the logs around the logs in "result" field in the same log stream.`
