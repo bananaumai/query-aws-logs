@@ -170,6 +170,7 @@ func handleQueryCommand(args []string) error {
 		default:
 		}
 
-		debug("Query#%s is curretly %s; will retry in %s...", *startQueryOutput.QueryId, *getQueryResultOutput.Status, tickerDuration)
+		debug("Query#%s is "+
+			" %s; will retry in %s...", *startQueryOutput.QueryId, *getQueryResultOutput.Status, tickerDuration)
 	}
 }
