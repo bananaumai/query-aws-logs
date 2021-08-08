@@ -1,4 +1,4 @@
-module github.com/bananaumai/qal
+module github.com/bananaumai/query-aws-logs
 
 go 1.16
 

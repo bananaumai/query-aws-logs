@@ -1,6 +1,6 @@
-# qal - Query AWS CloudWatch Logs
+# Query AWS CloudWatch Logs
 
-qal is a wrapper tool for [CloudWatch Logs Insights Query API](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html) that help your CloudWatch Logs investigation.
+query-aws-logs is a wrapper tool for [CloudWatch Logs Insights Query API](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html) that help your CloudWatch Logs investigation.
 You can retrieve the CloudWatch Logs Insights Query result in JSON format more easily than using aws-cli.
 Additionally, you can retrieve the logs around the logs which exactly match query.
 This would be helpful when you try investigating the logs in CloudWatch Logs.
@@ -10,7 +10,7 @@ The query result will be returned JSON array which is easily manipulated by the 
 ## Usage
 
 ```
-$ qal [-h] [-v] [-s start] [-e end] [-l limit] [-b before] [-a after] -g group(s) -q query
+$ query-aws-logs [-h] [-v] [-s start] [-e end] [-l limit] [-b before] [-a after] -g group(s) -q query
 ```
 
 ### Required options:
@@ -69,7 +69,7 @@ you may need to follow the following conventions to get "surroundings" field pro
 
 ### Specify AWS region, profile, credentials by your env vars
 
-qal doesn't provide the way to specify AWS related parameters.
+query-aws-logs doesn't provide the way to specify AWS related parameters.
 Use AWS standard env vars to specify them;
 i.e. AWS_DEFAULT_REGION, AWS_PROFILE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
@@ -78,7 +78,7 @@ i.e. AWS_DEFAULT_REGION, AWS_PROFILE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 ### Example1 - retrieving logs:
 
 ```
-$ qal -g my-log-group -q 'fields @timestamp, @message'
+$ query-aws-logs -g my-log-group -q 'fields @timestamp, @message'
 ```
 
 This command would output the JSON looking like below:
@@ -98,7 +98,7 @@ This command would output the JSON looking like below:
 ### Example2 - retrieving logs that contain "ERROR" string with surrounding logs:
 
 ```
-$ qal -g my-log-group -q 'fields @timestamp,@message,@log,@logStream | @message like "ERROR"' -b 10ms
+$ query-aws-logs -g my-log-group -q 'fields @timestamp,@message,@log,@logStream | @message like "ERROR"' -b 10ms
 ```
 
 This command would output the JSON looking like below:
