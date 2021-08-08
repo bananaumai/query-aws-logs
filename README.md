@@ -7,6 +7,14 @@ This would be helpful when you try investigating the logs in CloudWatch Logs.
 
 The query result will be returned JSON array which is easily manipulated by the JSON tools like `jq`.
 
+## Installation
+
+If you are using [Go](https://golang.org/), you can get it by `go-get`.
+
+```
+$ go get github.com/bananaumai/query-aws-logs
+```
+
 ## Usage
 
 ```
