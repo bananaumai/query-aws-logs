@@ -129,6 +129,7 @@ var (
 	helpMode    bool
 	versionMode bool
 	debugMode   bool
+	prettyMode  bool
 
 	version string
 
@@ -158,6 +159,7 @@ func init() {
 	flag.BoolVar(&helpMode, "h", false, "help")
 	flag.BoolVar(&versionMode, "v", false, "version")
 	flag.BoolVar(&debugMode, "d", false, "debug")
+	flag.BoolVar(&prettyMode, "p", false, "pretty print")
 	flag.StringVar(&startInput, "s", "", "query start time; RFC3339 formatted")
 	flag.StringVar(&endInput, "e", "", "query emd time; RFC3339 formatted")
 	flag.Int64Var(&limit, "l", 0, "limit")
@@ -336,6 +338,9 @@ func handleQueryCommand(ctx context.Context) error {
 		}
 
 		enc := json.NewEncoder(os.Stdout)
+		if prettyMode {
+			enc.SetIndent("", "  ")
+		}
 		if err := enc.Encode(rs); err != nil {
 			return fmt.Errorf("failed to encode query result: %w", err)
 		}
