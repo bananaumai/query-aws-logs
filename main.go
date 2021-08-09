@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -108,6 +110,31 @@ Example2 - retrieving logs that contain "ERROR" string with surrounding logs:
   ]`
 
 type (
+	queryHandler struct {
+		queryID        string
+		queryCompleted bool
+
+		queryString        string
+		logGroupNames      []*string
+		startTime, endTime time.Time
+		limit              int64
+		before             time.Duration
+		after              time.Duration
+
+		once  sync.Once
+		mutex sync.Mutex
+		enc   *json.Encoder
+
+		cli cloudwatchlogsiface.CloudWatchLogsAPI
+	}
+
+	queryHandlerConfig struct {
+		queryString, logGroupNames, startTime, endTime string
+		limit                                          int64
+		before, after                                  time.Duration
+		enc                                            *json.Encoder
+	}
+
 	queryResult struct {
 		Result       map[string]string `json:"result"`
 		Surroundings []logEvent        `json:"surroundings,omitempty"`
@@ -122,7 +149,7 @@ type (
 const cloudwatchTimestampStrFormat = "2006-01-02 15:04:05.999"
 
 var (
-	cli cloudwatchlogsiface.CloudWatchLogsAPI
+	version string
 
 	logger *log.Logger
 
@@ -130,17 +157,6 @@ var (
 	versionMode bool
 	debugMode   bool
 	prettyMode  bool
-
-	version string
-
-	startInput, endInput string
-	startTime, endTime   time.Time
-	limit                int64
-	logGroupInput        string
-	queryString          string
-
-	before time.Duration
-	after  time.Duration
 
 	_ json.Marshaler = (*logEvent)(nil)
 )
@@ -152,126 +168,79 @@ func (e *logEvent) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func init() {
-	flag.Usage = func() {
-		_, _ = fmt.Fprintf(os.Stderr, "%s\n", usage)
+func newQueryHandler(cfg queryHandlerConfig) (*queryHandler, error) {
+	h := &queryHandler{}
+
+	sess, err := session.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new AWS Session: %w", err)
 	}
-	flag.BoolVar(&helpMode, "h", false, "help")
-	flag.BoolVar(&versionMode, "v", false, "version")
-	flag.BoolVar(&debugMode, "d", false, "debug")
-	flag.BoolVar(&prettyMode, "p", false, "pretty print")
-	flag.StringVar(&startInput, "s", "", "query start time; RFC3339 formatted")
-	flag.StringVar(&endInput, "e", "", "query emd time; RFC3339 formatted")
-	flag.Int64Var(&limit, "l", 0, "limit")
-	flag.StringVar(&logGroupInput, "g", "", "log group name(s)")
-	flag.StringVar(&queryString, "q", "", "query string")
-	flag.DurationVar(&before, "b", 0, "a parameter to search log events in a log stream")
-	flag.DurationVar(&after, "a", 0, "a parameter to search log events in a log stream")
-	flag.Parse()
+	h.cli = cloudwatchlogs.New(sess)
 
-	if len(os.Args) < 2 {
-		helpMode = true
-	}
-
-	if debugMode {
-		logger = log.New(os.Stderr, "", log.Ldate)
-	}
-}
-
-func main() {
-	if helpMode {
-		printHelp()
-		os.Exit(0)
-	}
-
-	if versionMode {
-		fmt.Printf(version)
-		os.Exit(0)
-	}
-
-	cli = cloudwatchlogs.New(session.Must(session.NewSession()))
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-	go func() {
-		defer func() { done <- struct{}{} }()
-		if err := handleQueryCommand(ctx); err != nil {
-			printErrorWithUsage(err)
-			os.Exit(1)
-		}
-	}()
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-
-	select {
-	case <-sigs:
-		printDebug("canceled")
-	case <-done:
-		printDebug("done")
-	}
-
-	cancel()
-}
-
-func handleQueryCommand(ctx context.Context) error {
 	now := time.Now()
 
-	if startInput != "" {
-		t, err := time.Parse(time.RFC3339, startInput)
+	if cfg.startTime != "" {
+		t, err := time.Parse(time.RFC3339, cfg.startTime)
 		if err != nil {
-			return fmt.Errorf("invalid start time format: %s", err)
+			return nil, fmt.Errorf("invalid start time format: %s", err)
 		}
-		startTime = t
+		h.startTime = t
+	}
+	if h.startTime.IsZero() {
+		h.startTime = now.Add(-time.Hour)
 	}
 
-	if startTime.IsZero() {
-		startTime = now.Add(-time.Hour)
-	}
-
-	if endInput != "" {
-		t, err := time.Parse(time.RFC3339, endInput)
+	if cfg.endTime != "" {
+		t, err := time.Parse(time.RFC3339, cfg.endTime)
 		if err != nil {
-			return fmt.Errorf("invalid end time format: %s", err)
+			return nil, fmt.Errorf("invalid end time format: %s", err)
 		}
-		endTime = t
+		h.endTime = t
+	}
+	if h.endTime.IsZero() {
+		h.endTime = now
 	}
 
-	if endTime.IsZero() {
-		endTime = now
+	if !h.endTime.After(h.startTime) {
+		return nil, fmt.Errorf("end time should be after start time")
 	}
 
-	if !endTime.After(startTime) {
-		return fmt.Errorf("end time should be after start time")
+	h.limit = cfg.limit
+	if h.limit == 0 {
+		h.limit = 1000
 	}
 
-	if limit == 0 {
-		limit = 1000
-	}
+	h.before = cfg.before
+	h.after = cfg.after
 
-	if logGroupInput == "" {
-		return fmt.Errorf("log grou name(s) should be spedified")
+	if cfg.logGroupNames == "" {
+		return nil, fmt.Errorf("log grou name(s) should be spedified")
 	}
-	var logGroupNames []*string
-	for _, lg := range strings.Split(logGroupInput, ",") {
+	for _, lg := range strings.Split(cfg.logGroupNames, ",") {
 		lg := strings.TrimSpace(lg)
-		logGroupNames = append(logGroupNames, &lg)
+		h.logGroupNames = append(h.logGroupNames, &lg)
 	}
 
-	if queryString == "" {
-		return fmt.Errorf("query string should be specified")
+	if cfg.queryString == "" {
+		return nil, fmt.Errorf("query string should be specified")
 	}
+	h.queryString = cfg.queryString
 
+	h.enc = cfg.enc
+
+	return h, nil
+}
+
+func (h *queryHandler) handle(ctx context.Context) error {
+	printDebug("calling StartQuery API...")
 	startQueryInput := cloudwatchlogs.StartQueryInput{
-		QueryString:   &queryString,
-		LogGroupNames: logGroupNames,
-		StartTime:     aws.Int64(startTime.Unix()),
-		EndTime:       aws.Int64(endTime.Unix()),
-		Limit:         &limit,
+		QueryString:   &h.queryString,
+		LogGroupNames: h.logGroupNames,
+		StartTime:     aws.Int64(h.startTime.Unix()),
+		EndTime:       aws.Int64(h.endTime.Unix()),
+		Limit:         &h.limit,
 	}
-
-	startQueryOutput, err := cli.StartQuery(&startQueryInput)
+	startQueryOutput, err := h.cli.StartQuery(&startQueryInput)
 	if err != nil {
 		return fmt.Errorf("failed StartQuery request: %w", err)
 	}
@@ -281,6 +250,11 @@ func handleQueryCommand(ctx context.Context) error {
 	defer func() {
 		ticker.Stop()
 	}()
+
+	h.queryID = *startQueryOutput.QueryId
+	printDebug("Query#%s is acquired", h.queryID)
+
+	var getQueryResultOutput *cloudwatchlogs.GetQueryResultsOutput
 	for {
 		select {
 		case <-ctx.Done():
@@ -288,67 +262,69 @@ func handleQueryCommand(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
+		printDebug("calling GetQueryResults API with Query#%s...", h.queryID)
 		getQueryResultInput := cloudwatchlogs.GetQueryResultsInput{
-			QueryId: startQueryOutput.QueryId,
+			QueryId: &h.queryID,
 		}
-		getQueryResultOutput, err := cli.GetQueryResults(&getQueryResultInput)
+		getQueryResultOutput, err = h.cli.GetQueryResults(&getQueryResultInput)
 		if err != nil {
 			return fmt.Errorf("failed GetQueryResult request: %w", err)
 		}
 
 		if *getQueryResultOutput.Status != "Complete" {
-			printDebug("Query#%s is %s; will retry in %s...", *startQueryOutput.QueryId, *getQueryResultOutput.Status, tickerDuration)
+			printDebug("Query#%s status is still %s; will retry in %s...", h.queryID, *getQueryResultOutput.Status, tickerDuration)
 			continue
 		}
 
-		rs := make([]*queryResult, len(getQueryResultOutput.Results))
-
-		var canGetSurroundings bool
-		for i, fields := range getQueryResultOutput.Results {
-			m := make(map[string]string)
-
-			var hasTimestampField, hasLogField, hasLogStreamField bool
-			for _, field := range fields {
-				switch *field.Field {
-				case "@ptr":
-					// Note: @ptr fields are omitted
-					continue
-				case "@timestamp":
-					hasTimestampField = true
-				case "@log":
-					hasLogField = true
-				case "@logStream":
-					hasLogStreamField = true
-				}
-
-				m[*field.Field] = *field.Value
-			}
-
-			if hasTimestampField && hasLogField && hasLogStreamField {
-				canGetSurroundings = true
-			}
-
-			rs[i] = &queryResult{
-				Result: m,
-			}
-		}
-
-		if canGetSurroundings && (before > 0 || after > 0) {
-			attachSurroundings(ctx, rs)
-		}
-
-		enc := json.NewEncoder(os.Stdout)
-		if prettyMode {
-			enc.SetIndent("", "  ")
-		}
-		if err := enc.Encode(rs); err != nil {
-			return fmt.Errorf("failed to encode query result: %w", err)
-		}
-		return nil
+		h.queryCompleted = true
+		printDebug("Query#%s is completed: { bytesScanned: %f, recordsScanned: %f, recordsMatched: %f } ",
+			h.queryID, *getQueryResultOutput.Statistics.BytesScanned, *getQueryResultOutput.Statistics.RecordsScanned, *getQueryResultOutput.Statistics.RecordsMatched)
+		break
 	}
+
+	rs := make([]*queryResult, len(getQueryResultOutput.Results))
+	var canGetSurroundings bool
+	for i, fields := range getQueryResultOutput.Results {
+		m := make(map[string]string)
+
+		var hasTimestampField, hasLogField, hasLogStreamField bool
+		for _, field := range fields {
+			switch *field.Field {
+			case "@ptr":
+				// Note: @ptr fields are omitted
+				continue
+			case "@timestamp":
+				hasTimestampField = true
+			case "@log":
+				hasLogField = true
+			case "@logStream":
+				hasLogStreamField = true
+			}
+
+			m[*field.Field] = *field.Value
+		}
+
+		if hasTimestampField && hasLogField && hasLogStreamField {
+			canGetSurroundings = true
+		}
+
+		rs[i] = &queryResult{
+			Result: m,
+		}
+	}
+
+	if canGetSurroundings && (h.before > 0 || h.after > 0) {
+		printDebug("attaching surrounding logs...")
+		h.attachSurroundings(ctx, rs)
+	}
+
+	if err := h.enc.Encode(rs); err != nil {
+		return fmt.Errorf("failed to encode query result: %w", err)
+	}
+	return nil
 }
 
-func attachSurroundings(ctx context.Context, rs []*queryResult) {
+func (h *queryHandler) attachSurroundings(ctx context.Context, rs []*queryResult) {
 	for _, r := range rs {
 		logField, ok := r.Result["@log"]
 		if !ok {
@@ -377,10 +353,10 @@ func attachSurroundings(ctx context.Context, rs []*queryResult) {
 			printDebug("@timestamp field might be unexpected format: %s", timestamp)
 			continue
 		}
-		start := timestamp.Add(-before)
-		end := timestamp.Add(after)
+		start := timestamp.Add(-h.before)
+		end := timestamp.Add(h.after)
 
-		logEvents, err := getLogEvents(ctx, logGroup, logStreamField, start, end)
+		logEvents, err := h.getLogEvents(ctx, logGroup, logStreamField, start, end)
 		if err != nil {
 			printDebug("failed to get log events from %s:%s between %s and %s", logGroup, logStreamField, start, end)
 			continue
@@ -390,9 +366,9 @@ func attachSurroundings(ctx context.Context, rs []*queryResult) {
 	}
 }
 
-func getLogEvents(ctx context.Context, group, stream string, start time.Time, end time.Time) ([]logEvent, error) {
-	startTime := start.UnixNano()/int64(time.Millisecond) - before.Milliseconds()
-	endTime := end.UnixNano()/int64(time.Millisecond) + after.Milliseconds()
+func (h *queryHandler) getLogEvents(ctx context.Context, group, stream string, start time.Time, end time.Time) ([]logEvent, error) {
+	startTime := start.UnixNano()/int64(time.Millisecond) - h.before.Milliseconds()
+	endTime := end.UnixNano()/int64(time.Millisecond) + h.after.Milliseconds()
 
 	input := &cloudwatchlogs.GetLogEventsInput{
 		LogGroupName:  &group,
@@ -401,8 +377,9 @@ func getLogEvents(ctx context.Context, group, stream string, start time.Time, en
 		EndTime:       &endTime,
 	}
 
+	printDebug("retrieving logs in %s::%s (%s-%s) from GetLogEvents API", group, stream, start.UTC().Format(cloudwatchTimestampStrFormat), end.UTC().Format(cloudwatchTimestampStrFormat))
 	var events []logEvent
-	if err := cli.GetLogEventsPagesWithContext(ctx, input, func(output *cloudwatchlogs.GetLogEventsOutput, b bool) bool {
+	if err := h.cli.GetLogEventsPagesWithContext(ctx, input, func(output *cloudwatchlogs.GetLogEventsOutput, b bool) bool {
 		if output == nil || len(output.Events) == 0 {
 			return false
 		}
@@ -419,6 +396,113 @@ func getLogEvents(ctx context.Context, group, stream string, start time.Time, en
 	}
 
 	return events, nil
+}
+
+func (h *queryHandler) cancel(timeout time.Duration) error {
+	if h.queryID == "" || h.queryCompleted {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		printDebug("calling StopQuery API with Query#%s...", h.queryID)
+		output, err := h.cli.StopQuery(&cloudwatchlogs.StopQueryInput{QueryId: &h.queryID})
+		if err != nil {
+			done <- fmt.Errorf("StopQuery API call has failed: %w", err)
+			return
+		}
+		if output.Success != nil && !*output.Success {
+			done <- errors.New("StopQuery API call didn't succeed")
+			return
+		}
+		printDebug("Query#%s has successfully been stopped", h.queryID)
+		done <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		return errors.New("StopQuery API call has timed out")
+	case err := <-done:
+		return err
+	}
+}
+
+func main() {
+	cfg := queryHandlerConfig{}
+
+	flag.Usage = func() {
+		_, _ = fmt.Fprintf(os.Stderr, "%s\n", usage)
+	}
+	flag.BoolVar(&helpMode, "h", false, "help")
+	flag.BoolVar(&versionMode, "v", false, "version")
+	flag.BoolVar(&debugMode, "d", false, "debug")
+	flag.BoolVar(&prettyMode, "p", false, "pretty print")
+	flag.StringVar(&cfg.startTime, "s", "", "query start time; RFC3339 formatted")
+	flag.StringVar(&cfg.endTime, "e", "", "query emd time; RFC3339 formatted")
+	flag.Int64Var(&cfg.limit, "l", 0, "limit")
+	flag.StringVar(&cfg.logGroupNames, "g", "", "log group name(s)")
+	flag.StringVar(&cfg.queryString, "q", "", "query string")
+	flag.DurationVar(&cfg.before, "b", 0, "a parameter to search log events in a log stream")
+	flag.DurationVar(&cfg.after, "a", 0, "a parameter to search log events in a log stream")
+	flag.Parse()
+
+	if len(os.Args) < 2 {
+		helpMode = true
+	}
+
+	if helpMode {
+		printHelp()
+		os.Exit(0)
+	}
+
+	if versionMode {
+		fmt.Printf(version)
+		os.Exit(0)
+	}
+
+	if debugMode {
+		logger = log.New(os.Stderr, "", log.Ldate)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	if prettyMode {
+		enc.SetIndent("", "  ")
+	}
+	cfg.enc = enc
+
+	handler, err := newQueryHandler(cfg)
+	if err != nil {
+		printErrorWithUsage(err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{}, 1)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		if err := handler.handle(ctx); err != nil {
+			printError(err)
+			os.Exit(1)
+		}
+	}()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case <-sigs:
+		cancel()
+		if err := handler.cancel(10 * time.Second); err != nil {
+			printError(err)
+			os.Exit(1)
+		}
+		printDebug("operation has been canceled")
+	case <-done:
+		printDebug("operation has been completed")
+	}
 }
 
 func extractTimeFromTimestampField(timestampField string) (time.Time, bool) {
@@ -448,6 +532,10 @@ func epochMilliToTime(epoch int64) time.Time {
 
 func printHelp() {
 	_, _ = fmt.Fprintf(os.Stdout, helpMsg, usage)
+}
+
+func printError(err error) {
+	_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 }
 
 func printErrorWithUsage(err error) {
