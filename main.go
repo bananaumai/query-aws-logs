@@ -157,7 +157,7 @@ func init() {
 	}
 	flag.BoolVar(&helpMode, "h", false, "help")
 	flag.BoolVar(&versionMode, "v", false, "version")
-	flag.BoolVar(&debugMode, "debug", false, "debug")
+	flag.BoolVar(&debugMode, "d", false, "debug")
 	flag.StringVar(&startInput, "s", "", "query start time; RFC3339 formatted")
 	flag.StringVar(&endInput, "e", "", "query emd time; RFC3339 formatted")
 	flag.Int64Var(&limit, "l", 0, "limit")
