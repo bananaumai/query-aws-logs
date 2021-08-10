@@ -20,7 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
 )
 
-const usage = `Usage: query-aws-logs [-h] [-v] [-d] [-s <start>] [-e <end>] [-l <limit>] [-b <before>] [-a <after>] -g <group(s)> -q <query>
+const usage = `Usage: query-aws-logs [-h] [-v] [-d] [-p] [-s <start>] [-e <end>] [-l <limit>] [-b <before>] [-a <after>] -g <group(s)> -q <query>
 
 Available options are listed below:
 
