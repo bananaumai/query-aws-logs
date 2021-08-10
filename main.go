@@ -32,12 +32,13 @@ Required options:
 
 Non-required options:
   -h	Help flag. If specified, the command usage will be displayed. False by default.
-  -v    Version flag. If specified, version information is displayed. False by default.
-  -d    Debug flag. If specified, the printDebug print will be output in stderr. False by default.
+  -v	Version flag. If specified, version information is displayed. False by default.
+  -d	Debug flag. If specified, the debug print will be output in stderr. False by default.
+  -p	Pretty print flag. If specified, the output JSON will be pretty-printed. False by default.
   -s	Start time in RFC3339 format. The logs after this timestamp will be queried. One hour before current time by default.
   -e	End time in RFC3339 format. The logs before this time stamp will be queried. Current time by default.
-  -l    Limit of the number of returned logs events which match against query. 1000 by default
-  -b    Before. A time duration parameter specifying how long before the query matched log event timestamp to be used to search the logs around.
+  -l	Limit of the number of returned logs events which match against query. 1000 by default
+  -b	Before. A time duration parameter specifying how long before the query matched log event timestamp to be used to search the logs around.
   -a	After. A time duration parameter specifying how long after the query matched log event timestamp to be used to search the logs around.
 
 You are supposed to specify -b and -a option by the duration string: 1s => 1 second, 1ms => 1 milli-sec.
