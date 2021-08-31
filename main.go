@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -122,9 +126,10 @@ type (
 		before             time.Duration
 		after              time.Duration
 
-		once  sync.Once
-		mutex sync.Mutex
-		enc   *json.Encoder
+		once     sync.Once
+		mutex    sync.Mutex
+		enc      *json.Encoder
+		cacheDir string
 
 		cli cloudwatchlogsiface.CloudWatchLogsAPI
 	}
@@ -147,7 +152,12 @@ type (
 	}
 )
 
-const cloudwatchTimestampStrFormat = "2006-01-02 15:04:05.999"
+const (
+	cacheFilePrefix              = "query-aws-logs-"
+	cloudwatchTimestampStrFormat = "2006-01-02 15:04:05.999"
+	tickerDuration               = 3 * time.Second
+	cacheTTL                     = time.Hour
+)
 
 var (
 	version string
@@ -229,33 +239,64 @@ func newQueryHandler(cfg queryHandlerConfig) (*queryHandler, error) {
 
 	h.enc = cfg.enc
 
+	h.cacheDir = os.TempDir()
+	pattern := h.cacheDir + cacheFilePrefix + "*"
+	if files, err := filepath.Glob(pattern); err != nil {
+		printDebug("failed to list cache files: %s", err)
+	} else {
+		printDebug("cleaning stale cache files...")
+		for _, f := range files {
+			s, err := os.Stat(f)
+			if err != nil {
+				printDebug("failed to get file stat of %s: %s", s, err)
+				continue
+			}
+			if s.ModTime().Add(cacheTTL).Before(time.Now()) {
+				if err = os.Remove(f); err != nil {
+					printDebug("failed to remove stale cache file %s: %s", f, err)
+				}
+			}
+		}
+	}
+	h.queryID, err = h.getQueryID()
+	if err != nil {
+		printDebug("failed to get cached QueryID: %s", err)
+	}
+
 	return h, nil
 }
 
 func (h *queryHandler) handle(ctx context.Context) error {
-	printDebug("calling StartQuery API...")
-	startQueryInput := cloudwatchlogs.StartQueryInput{
-		QueryString:   &h.queryString,
-		LogGroupNames: h.logGroupNames,
-		StartTime:     aws.Int64(h.startTime.Unix()),
-		EndTime:       aws.Int64(h.endTime.Unix()),
-		Limit:         &h.limit,
-	}
-	startQueryOutput, err := h.cli.StartQuery(&startQueryInput)
-	if err != nil {
-		return fmt.Errorf("failed StartQuery request: %w", err)
+	if h.queryID == "" {
+		printDebug("cache mismatch; calling StartQuery API...")
+		startQueryInput := cloudwatchlogs.StartQueryInput{
+			QueryString:   &h.queryString,
+			LogGroupNames: h.logGroupNames,
+			StartTime:     aws.Int64(h.startTime.Unix()),
+			EndTime:       aws.Int64(h.endTime.Unix()),
+			Limit:         &h.limit,
+		}
+		startQueryOutput, err := h.cli.StartQuery(&startQueryInput)
+		if err != nil {
+			return fmt.Errorf("failed StartQuery request: %w", err)
+		}
+
+		h.queryID = *startQueryOutput.QueryId
+		printDebug("acquired QueryID #%s", h.queryID)
+
+		if err := h.saveQueryID(h.queryID); err != nil {
+			printDebug("failed to save QueryID: %s", err)
+		}
 	}
 
-	const tickerDuration = 3 * time.Second
 	ticker := time.NewTicker(tickerDuration)
 	defer func() {
 		ticker.Stop()
 	}()
-
-	h.queryID = *startQueryOutput.QueryId
-	printDebug("Query#%s is acquired", h.queryID)
-
-	var getQueryResultOutput *cloudwatchlogs.GetQueryResultsOutput
+	var (
+		err                  error
+		getQueryResultOutput *cloudwatchlogs.GetQueryResultsOutput
+	)
 	for {
 		select {
 		case <-ctx.Done():
@@ -263,7 +304,7 @@ func (h *queryHandler) handle(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
-		printDebug("calling GetQueryResults API with Query#%s...", h.queryID)
+		printDebug("calling GetQueryResults API with QueryID [%s]...", h.queryID)
 		getQueryResultInput := cloudwatchlogs.GetQueryResultsInput{
 			QueryId: &h.queryID,
 		}
@@ -273,12 +314,12 @@ func (h *queryHandler) handle(ctx context.Context) error {
 		}
 
 		if *getQueryResultOutput.Status != "Complete" {
-			printDebug("Query#%s status is still %s; will retry in %s...", h.queryID, *getQueryResultOutput.Status, tickerDuration)
+			printDebug("querying for QueryID [%s] is still %s; will retry in %s...", h.queryID, *getQueryResultOutput.Status, tickerDuration)
 			continue
 		}
 
 		h.queryCompleted = true
-		printDebug("Query#%s is completed: { bytesScanned: %f, recordsScanned: %f, recordsMatched: %f } ",
+		printDebug("querying for QueryID [%s] is completed: { bytesScanned: %f, recordsScanned: %f, recordsMatched: %f } ",
 			h.queryID, *getQueryResultOutput.Statistics.BytesScanned, *getQueryResultOutput.Statistics.RecordsScanned, *getQueryResultOutput.Statistics.RecordsMatched)
 		break
 	}
@@ -319,7 +360,7 @@ func (h *queryHandler) handle(ctx context.Context) error {
 		h.attachSurroundings(ctx, rs)
 	}
 
-	if err := h.enc.Encode(rs); err != nil {
+	if err = h.enc.Encode(rs); err != nil {
 		return fmt.Errorf("failed to encode query result: %w", err)
 	}
 	return nil
@@ -409,7 +450,7 @@ func (h *queryHandler) cancel(timeout time.Duration) error {
 
 	done := make(chan error, 1)
 	go func() {
-		printDebug("calling StopQuery API with Query#%s...", h.queryID)
+		printDebug("calling StopQuery API with QueryID [%s]...", h.queryID)
 		output, err := h.cli.StopQuery(&cloudwatchlogs.StopQueryInput{QueryId: &h.queryID})
 		if err != nil {
 			done <- fmt.Errorf("StopQuery API call has failed: %w", err)
@@ -419,7 +460,7 @@ func (h *queryHandler) cancel(timeout time.Duration) error {
 			done <- errors.New("StopQuery API call didn't succeed")
 			return
 		}
-		printDebug("Query#%s has successfully been stopped", h.queryID)
+		printDebug("QueryID [%s] has successfully been stopped", h.queryID)
 		done <- nil
 	}()
 
@@ -429,6 +470,58 @@ func (h *queryHandler) cancel(timeout time.Duration) error {
 	case err := <-done:
 		return err
 	}
+}
+
+func (h *queryHandler) getQueryID() (string, error) {
+	cachePath := h.getCacheFilePath()
+
+	stat, err := os.Stat(cachePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get file stat of %s: %w", cachePath, err)
+	}
+
+	if stat.ModTime().Add(time.Hour).Before(time.Now()) {
+		printDebug("found QueryID cache but expired, removing cache file %s", cachePath)
+		if err := os.Remove(cachePath); err != nil {
+			// don't return this error, just debug print instead
+			printDebug("failed to remove QueryID cache file")
+		}
+		return "", nil
+	}
+
+	bs, err := ioutil.ReadFile(cachePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read QueryID from %s: %w", cachePath, err)
+	}
+	queryID := string(bs)
+	printDebug("loaded QueryID[%s] from %s", queryID, cachePath)
+	return queryID, nil
+}
+
+func (h *queryHandler) saveQueryID(queryID string) error {
+	cachePath := h.getCacheFilePath()
+	if err := ioutil.WriteFile(cachePath, []byte(queryID), 0755); err != nil {
+		return fmt.Errorf("failed to write QueryID [%s] to %s", queryID, cachePath)
+	}
+	printDebug("saved QueryID[%s] to %s", queryID, cachePath)
+	return nil
+}
+
+func (h *queryHandler) getCacheFilePath() string {
+	cacheKey := h.getCacheKey()
+	return h.cacheDir + cacheFilePrefix + cacheKey
+}
+
+func (h *queryHandler) getCacheKey() string {
+	var src string
+	for _, g := range h.logGroupNames {
+		src += *g + ":"
+	}
+	src += fmt.Sprintf("%s:%s:%s:%d", h.queryString, h.startTime, h.endTime, h.limit)
+
+	enc := sha256.New()
+	enc.Write([]byte(src))
+	return hex.EncodeToString(enc.Sum(nil))
 }
 
 func main() {
@@ -500,9 +593,7 @@ func main() {
 			printError(err)
 			os.Exit(1)
 		}
-		printDebug("operation has been canceled")
 	case <-done:
-		printDebug("operation has been completed")
 	}
 }
 
